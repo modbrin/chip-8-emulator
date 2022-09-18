@@ -27,8 +27,11 @@ const RAM_SIZE: usize = 4096;
 /// timing, instructions per second
 const IPS: usize = 700;
 
-/// render timinig, frames per second
+/// render timing, frames per second
 const FPS: usize = 60;
+
+/// timers frequency, 60 Hz
+const TIMERS_FREQ: usize = 60;
 
 pub struct Chip8 {
     /// 64x32 display, 8-bit depth
@@ -45,9 +48,9 @@ pub struct Chip8 {
     pub vreg: [u8; VREG_SIZE],
     /// 4 kb of random access memory
     pub ram: [u8; RAM_SIZE],
-    /// delay timer
+    /// delay timer, decrements at 60 Hz rate
     pub delay_timer: Arc<AtomicU8>,
-    /// sound timer
+    /// sound timer - beep while non-zero, decrements at 60 Hz rate 
     pub sound_timer: Arc<AtomicU8>,
 }
 
