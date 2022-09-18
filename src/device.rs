@@ -1,74 +1,108 @@
 use crate::util::*;
-use std::error::Error;
-use std::fmt::Display;
-use std::sync::{atomic::AtomicU8, Arc};
+use std::{
+    fs::File,
+    io::{BufReader, Read, Write},
+    path::Path,
+    sync::{atomic::AtomicU8, Arc},
+    thread,
+    time::{Duration, Instant},
+};
 
+/// display dimensions
 const DISPLAY_H: usize = 32;
 const DISPLAY_W: usize = 64;
 
+/// font is located at 0x050-0x09F
+const FONT_LOAD_ADDR: usize = 0x50;
+
+/// rom is located at 0x200-*
+const ROM_LOAD_ADDR: usize = 0x200;
+
+/// chip-8 specifications
+const DISPLAY_SIZE: usize = DISPLAY_H * DISPLAY_W;
+const STACK_SIZE: usize = 16;
+const VREG_SIZE: usize = 16;
+const RAM_SIZE: usize = 4096;
+
+/// timing, instructions per second
+const IPS: usize = 700;
+
+/// render timinig, frames per second
+const FPS: usize = 60;
+
 pub struct Chip8 {
     /// 64x32 display, 8-bit depth
-    pub display: [u8; DISPLAY_H * DISPLAY_W],
+    pub display: [u8; DISPLAY_SIZE],
     /// program counter
     pub pc: u16,
     /// index register
     pub ireg: u16,
     /// subroutine stack
-    pub stack: [u16; 16],
+    pub stack: [u16; STACK_SIZE],
     /// stack pointer
     pub sp: i8,
     /// variable registers
-    pub vreg: [u8; 16],
+    pub vreg: [u8; VREG_SIZE],
     /// 4 kb of random access memory
-    pub ram: [u8; 4096],
+    pub ram: [u8; RAM_SIZE],
     /// delay timer
     pub delay_timer: Arc<AtomicU8>,
     /// sound timer
     pub sound_timer: Arc<AtomicU8>,
 }
 
-#[derive(Clone, Debug)]
-pub enum ExecError {
-    VRegOutOfBounds,
-    StackOverflow,
-    StackUnderflow,
-    MemoryError,
-    DisplayOutOfBounds,
-}
-
-impl Error for ExecError {}
-
-impl Display for ExecError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::VRegOutOfBounds => {
-                write!(f, "Variable register out of bounds")
-            }
-            Self::StackOverflow => {
-                write!(f, "Stack overflow")
-            }
-            Self::StackUnderflow => {
-                write!(f, "Stack underflow")
-            }
-            Self::MemoryError => {
-                write!(f, "RAM access out of bounds")
-            }
-            Self::DisplayOutOfBounds => {
-                write!(f, "Screen access/draw out of bounds")
-            }
-        }
-    }
-}
-
 type EE = ExecError;
 
 /// control flow
 impl Chip8 {
-    pub fn initialize() {}
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, ExecError> {
+        let mut device = Self {
+            display: [0; DISPLAY_SIZE],
+            pc: ROM_LOAD_ADDR as u16,
+            ireg: 0,
+            stack: [0; STACK_SIZE],
+            sp: -1,
+            vreg: [0; VREG_SIZE],
+            ram: [0; RAM_SIZE],
+            delay_timer: Arc::new(AtomicU8::new(0)),
+            sound_timer: Arc::new(AtomicU8::new(0)),
+        };
+        let rom = Self::read_rom_from_file(path)?;
+        device.load(rom, ROM_LOAD_ADDR)?;
+        device.load(get_default_font(), FONT_LOAD_ADDR)?;
 
-    pub fn load_rom() {}
+        Ok(device)
+    }
 
-    pub fn run() {}
+    pub fn run(&mut self) -> Result<(), ExecError> {
+        let time_per_instruction = Duration::from_secs(1) / IPS as u32;
+        // start timer threads
+        // start exit handler thread
+        // optional: start display dimmer thread
+        loop {
+            let clock = Instant::now();
+            // execute instruction cycle
+            let inst = self.fetch()?;
+            self.decode_and_execute(inst)?;
+            // wait to meet timing
+            let inst_time = clock.elapsed();
+            if let Some(sleep_time) = time_per_instruction.checked_sub(inst_time) {
+                thread::sleep(sleep_time);
+            } else {
+                println!("Instruction took longer than expected: {:#06x}", inst);
+            }
+        }
+    }
+
+    fn read_rom_from_file<P: AsRef<Path>>(path: P) -> Result<Vec<u8>, ExecError> {
+        let file = File::open(path.as_ref()).map_err(|_| EE::LoadRomError)?;
+        let mut reader = BufReader::new(file);
+        let mut buffer = Vec::new();
+        reader
+            .read_to_end(&mut buffer)
+            .map_err(|_| EE::LoadRomError)?;
+        Ok(buffer)
+    }
 
     fn fetch(&mut self) -> Result<u16, ExecError> {
         let a = *self.ram.get(self.pc as usize).ok_or(EE::MemoryError)?;
@@ -81,35 +115,36 @@ impl Chip8 {
     }
 
     fn decode_and_execute(&mut self, inst: u16) -> Result<(), ExecError> {
-        match inst & OP_MASK {
-            0x_0_000 => match inst & NNN_MASK {
+        // println!("Got instruction: {:#06x}", inst);
+        match take_op(inst) {
+            0x0 => match take_nnn(inst) {
                 // clear screen
-                0x0_0E0_ => self.clear_display(),
+                0x0E0 => self.clear_display(),
                 _ => {}
             },
             // jump
-            0x_1_000 => {
-                self.pc = inst & NNN_MASK;
+            0x1 => {
+                self.pc = take_nnn(inst);
             }
             // set register vx
-            0x_6_000 => {
+            0x6 => {
                 *self
                     .vreg
                     .get_mut(take_x(inst) as usize)
                     .ok_or(EE::VRegOutOfBounds)? = take_nn(inst);
             }
             // add to register vx
-            0x_7_000 => {
+            0x7 => {
                 *self
                     .vreg
                     .get_mut(take_x(inst) as usize)
                     .ok_or(EE::VRegOutOfBounds)? += take_nn(inst);
             }
             // set index register
-            0x_a_000 => {
+            0xa => {
                 self.ireg = take_nnn(inst);
             }
-            0x_d_000 => {
+            0xd => {
                 let x_coord = *self
                     .vreg
                     .get(take_x(inst) as usize)
@@ -119,9 +154,11 @@ impl Chip8 {
                     .get(take_y(inst) as usize)
                     .ok_or(EE::VRegOutOfBounds)?;
                 let height = take_n(inst);
-                self.draw_sprite(x_coord, y_coord, height);
+                self.draw_sprite(x_coord, y_coord, height)?;
             }
-            _ => {}
+            _ => {
+                println!("Unknown instruction: {:#06x}", inst);
+            }
         }
         Ok(())
     }
@@ -129,6 +166,16 @@ impl Chip8 {
 
 /// memory manipulation
 impl Chip8 {
+    fn load<B: AsRef<[u8]>>(&mut self, bytes: B, offset: usize) -> Result<(), ExecError> {
+        let bytes_ref = bytes.as_ref();
+        self.ram
+            .get_mut(offset..offset + bytes_ref.len())
+            .ok_or(EE::MemoryError)?
+            .write(bytes_ref)
+            .map_err(|_| EE::RamError)?;
+        Ok(())
+    }
+
     fn stack_push(&mut self, val: u16) -> Result<(), ExecError> {
         *self
             .stack
@@ -179,7 +226,7 @@ impl Chip8 {
 
     fn draw_sprite(&mut self, x: u8, y: u8, h: u8) -> Result<(), ExecError> {
         self.set_vf(0x00)?;
-        // position sprite inside window
+        // position sprite inside display
         let x = x as usize % DISPLAY_W;
         let y = y as usize % DISPLAY_H;
         // sprite is located at `ireg` memory address
@@ -197,7 +244,7 @@ impl Chip8 {
         Ok(())
     }
 
-    /// flip state of pixel on screen, doesn't wrap around
+    /// flip state of pixel on screen, doesn't wrap around,
     /// return `true` if pixel was turned off
     fn flip_pixel(&mut self, x: usize, y: usize) -> bool {
         self.display
