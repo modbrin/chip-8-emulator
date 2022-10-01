@@ -3,39 +3,39 @@ use std::{
     fs::File,
     io::{BufReader, Read, Write},
     path::Path,
-    sync::{atomic::AtomicU8, Arc},
+    sync::{atomic::AtomicU8, Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
 
 /// display dimensions
-const DISPLAY_H: usize = 32;
-const DISPLAY_W: usize = 64;
+pub const DISPLAY_H: usize = 32;
+pub const DISPLAY_W: usize = 64;
 
 /// font is located at 0x050-0x09F
-const FONT_LOAD_ADDR: usize = 0x50;
+pub const FONT_LOAD_ADDR: usize = 0x50;
 
 /// rom is located at 0x200-*
-const ROM_LOAD_ADDR: usize = 0x200;
+pub const ROM_LOAD_ADDR: usize = 0x200;
 
 /// chip-8 specifications
-const DISPLAY_SIZE: usize = DISPLAY_H * DISPLAY_W;
-const STACK_SIZE: usize = 16;
-const VREG_SIZE: usize = 16;
-const RAM_SIZE: usize = 4096;
+pub const DISPLAY_SIZE: usize = DISPLAY_H * DISPLAY_W;
+pub const STACK_SIZE: usize = 16;
+pub const VREG_SIZE: usize = 16;
+pub const RAM_SIZE: usize = 4096;
 
 /// timing, instructions per second
-const IPS: usize = 700;
+pub const IPS: usize = 700;
 
 /// render timing, frames per second
-const FPS: usize = 60;
+pub const FPS: usize = 60;
 
 /// timers frequency, 60 Hz
-const TIMERS_FREQ: usize = 60;
+pub const TIMERS_FREQ: usize = 60;
 
 pub struct Chip8 {
     /// 64x32 display, 8-bit depth
-    pub display: [u8; DISPLAY_SIZE],
+    pub display: Arc<Mutex<[u8; DISPLAY_SIZE]>>,
     /// program counter
     pub pc: u16,
     /// index register
@@ -50,7 +50,7 @@ pub struct Chip8 {
     pub ram: [u8; RAM_SIZE],
     /// delay timer, decrements at 60 Hz rate
     pub delay_timer: Arc<AtomicU8>,
-    /// sound timer - beep while non-zero, decrements at 60 Hz rate 
+    /// sound timer - beep while non-zero, decrements at 60 Hz rate
     pub sound_timer: Arc<AtomicU8>,
 }
 
@@ -60,7 +60,7 @@ type EE = ExecError;
 impl Chip8 {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, ExecError> {
         let mut device = Self {
-            display: [0; DISPLAY_SIZE],
+            display: Arc::new(Mutex::new([0; DISPLAY_SIZE])),
             pc: ROM_LOAD_ADDR as u16,
             ireg: 0,
             stack: [0; STACK_SIZE],
@@ -199,9 +199,15 @@ impl Chip8 {
     }
 }
 
+// value for pixel being on, i.e. white
 const PIXEL_ON: u8 = 0xff;
+// value for pixel being just turned off, will be dimmed with time
+const PIXEL_PRE_OFF: u8 = 0xfe;
+// value for pixel being completely off, i.e. black
 const PIXEL_OFF: u8 = 0x00;
+// VF register address which is treated as flag
 const VF_REG_FLAG: usize = 0x0f;
+const LEFTMOST_BIT: u8 = 0b10000000;
 
 // translate XY location to 1-dim array index
 #[inline]
@@ -209,15 +215,26 @@ pub const fn loc_to_idx(x: usize, y: usize) -> usize {
     y * DISPLAY_W + x
 }
 
+#[inline]
+pub const fn is_pixel_on(pixel: u8) -> bool {
+    pixel == PIXEL_ON
+}
+
 /// display management
 impl Chip8 {
     fn clear_display(&mut self) {
-        self.display.iter_mut().for_each(|pixel| *pixel = PIXEL_OFF);
+        self.display
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .for_each(|pixel| *pixel = PIXEL_OFF);
     }
 
     fn get_pixel_value(&mut self, x: usize, y: usize) -> u8 {
         *self
             .display
+            .lock()
+            .unwrap()
             .get(loc_to_idx(x, y))
             .unwrap_or_else(|| &PIXEL_OFF)
     }
@@ -236,8 +253,8 @@ impl Chip8 {
         for line_i in 0..h as usize {
             let addr = self.ireg + line_i as u16;
             let line = *self.ram.get(addr as usize).ok_or(EE::MemoryError)?;
-            for bit_i in (0..8usize).rev() {
-                if (0x01 << bit_i) & line > 0 {
+            for bit_i in 0..8usize {
+                if (LEFTMOST_BIT >> bit_i) & line > 0 {
                     if self.flip_pixel(x + bit_i, y + line_i) {
                         self.set_vf(0x01)?;
                     }
@@ -251,6 +268,8 @@ impl Chip8 {
     /// return `true` if pixel was turned off
     fn flip_pixel(&mut self, x: usize, y: usize) -> bool {
         self.display
+            .lock()
+            .unwrap()
             .get_mut(loc_to_idx(x, y))
             .map(|p| {
                 let was_on = *p == PIXEL_ON;

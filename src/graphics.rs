@@ -1,12 +1,11 @@
+use crate::device::{is_pixel_on, loc_to_idx, DISPLAY_H, DISPLAY_SIZE, DISPLAY_W};
 use macroquad::prelude::*;
+use std::sync::{Arc, Mutex};
 
-pub async fn squares_demo() {
-    let x = 63 as f32;
-    let y = 31 as f32;
-    let tiles_w = 64 as f32;
-    let tiles_h = 32 as f32;
+pub async fn display_draw(display: Arc<Mutex<[u8; DISPLAY_SIZE]>>) {
+    let tiles_w = DISPLAY_W as f32;
+    let tiles_h = DISPLAY_H as f32;
 
-    
     loop {
         clear_background(BLACK);
 
@@ -15,13 +14,21 @@ pub async fn squares_demo() {
 
         let tw = sw / tiles_w;
         let th = sh / tiles_h;
-        for x_i in 0..64 {
-            for y_i in 0..32 {
-                if (x_i + y_i) % 2 == 0 {
-                    draw_rectangle(x_i as f32 * tw, y_i as f32 * th, tw, th, WHITE);
+        let dh = display.lock().unwrap();
+        for x_i in 0..DISPLAY_W {
+            for y_i in 0..DISPLAY_H {
+                if let Some(&v) = dh.get(loc_to_idx(x_i, y_i)) {
+                    draw_rectangle(
+                        x_i as f32 * tw,
+                        y_i as f32 * th,
+                        tw,
+                        th,
+                        Color::from_rgba(v, v, v, u8::MAX),
+                    );
                 }
             }
         }
+        drop(dh);
 
         next_frame().await
     }
