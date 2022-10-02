@@ -3,7 +3,10 @@ use std::{
     fs::File,
     io::{BufReader, Read, Write},
     path::Path,
-    sync::{atomic::AtomicU8, Arc, Mutex},
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -281,5 +284,37 @@ impl Chip8 {
                 was_on
             })
             .unwrap_or_else(|| false)
+    }
+}
+
+pub fn decrement_timers_routine(timers: Vec<Arc<AtomicU8>>) {
+    let time_per_cycle = Duration::from_secs(1) / TIMERS_FREQ as u32;
+    loop {
+        let clock = Instant::now();
+        // check and decrement timers
+        for timer in timers.iter() {
+            let mut old_t = timer.load(Ordering::Relaxed);
+            loop {
+                if old_t == 0 {
+                    break;
+                }
+                match timer.compare_exchange_weak(
+                    old_t,
+                    old_t - 1,
+                    Ordering::SeqCst,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(x) => old_t = x,
+                }
+            }
+        }
+        // wait to meet timing
+        let inst_time = clock.elapsed();
+        if let Some(sleep_time) = time_per_cycle.checked_sub(inst_time) {
+            thread::sleep(sleep_time);
+        } else {
+            println!("Timer doesn't meet timing");
+        }
     }
 }

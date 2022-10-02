@@ -1,4 +1,4 @@
-use device::Chip8;
+use device::{decrement_timers_routine, Chip8};
 use graphics::display_draw;
 use macroquad::window::Conf;
 use std::{env, path::PathBuf, str::FromStr, sync::Arc, thread};
@@ -25,7 +25,12 @@ async fn main() {
     let rom_path = PathBuf::from_str(&rom_path_str).expect("Malformed rom path");
     let mut device = Chip8::new(rom_path).unwrap();
     let display = Arc::clone(&device.display);
-    let dh = thread::spawn(move || device.run().unwrap());
+    let delay_timer = Arc::clone(&device.delay_timer);
+    let sound_timer = Arc::clone(&device.sound_timer);
+    let timers_thread =
+        thread::spawn(move || decrement_timers_routine(vec![delay_timer, sound_timer]));
+    let device_thread = thread::spawn(move || device.run().unwrap());
     display_draw(display).await;
-    dh.join().unwrap();
+    device_thread.join().unwrap();
+    timers_thread.join().unwrap();
 }
