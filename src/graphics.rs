@@ -35,7 +35,7 @@ pub async fn display_draw(display: Arc<Mutex<[u8; DISPLAY_SIZE]>>) {
                 }
             }
         }
-
+        // println!("FPS: {:.1}", get_fps());
         next_frame().await
     }
 }

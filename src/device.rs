@@ -2,6 +2,7 @@ use crate::util::*;
 use std::{
     fs::File,
     io::{BufReader, Read, Write},
+    ops::Deref,
     path::Path,
     sync::{
         atomic::{AtomicU8, Ordering},
@@ -35,6 +36,9 @@ pub const FPS: usize = 60;
 
 /// timers frequency, 60 Hz
 pub const TIMERS_FREQ: usize = 60;
+
+pub const USE_VY_WHEN_SHIFING: bool = false; // TODO: should be a runtime setting
+pub const BXNN_JUMP_WITH_OFFSET: bool = false; // TODO: should be a runtime setting
 
 pub struct Chip8 {
     /// 64x32 display, 8-bit depth
@@ -126,52 +130,155 @@ impl Chip8 {
             0x0 => match take_nnn(inst) {
                 // clear screen
                 0x0E0 => self.clear_display(),
-                _ => {}
+                0x0EE => self.pc = self.stack_pop()?,
+                _ => (),
             },
             // jump
             0x1 => {
                 self.pc = take_nnn(inst);
             }
-            // set register vx
-            0x6 => {
-                *self
-                    .vreg
-                    .get_mut(take_x(inst) as usize)
-                    .ok_or(EE::VRegOutOfBounds)? = take_nn(inst);
+            // subroutine call
+            0x2 => {
+                self.stack_push(self.pc)?;
+                self.pc = take_nnn(inst);
             }
-            // add to register vx
+            // conditional skip when vx equal nn
+            0x3 => {
+                if self.vx(inst)? == take_nn(inst) {
+                    self.skip_inst();
+                }
+            }
+            // conditional skip when vx not equal nn
+            0x4 => {
+                if self.vx(inst)? != take_nn(inst) {
+                    self.skip_inst();
+                }
+            }
+            // conditional skip when vx equal vy
+            0x5 => {
+                if take_n(inst) == 0 {
+                    if self.vx(inst)? == self.vy(inst)? {
+                        self.skip_inst();
+                    }
+                } else {
+                    Self::unknown(inst);
+                }
+            }
+            // set register vx to nn
+            0x6 => {
+                *self.vx_mut(inst)? = take_nn(inst);
+            }
+            // add nn to register vx, allow overflow
             0x7 => {
-                *self
-                    .vreg
-                    .get_mut(take_x(inst) as usize)
-                    .ok_or(EE::VRegOutOfBounds)? += take_nn(inst);
+                let (val, _overflow) = self.vx(inst)?.overflowing_add(take_nn(inst));
+                *self.vx_mut(inst)? = val;
+            }
+            // logical and arithmetic operations
+            0x8 => {
+                match take_n(inst) {
+                    // vx = vy
+                    0x0 => *self.vx_mut(inst)? = self.vy(inst)?,
+                    // vx = vx OR vy
+                    0x1 => *self.vx_mut(inst)? = self.vx(inst)? | self.vy(inst)?,
+                    // vx = vx AND vy
+                    0x2 => *self.vx_mut(inst)? = self.vx(inst)? & self.vy(inst)?,
+                    // vx = vx XOR vy
+                    0x3 => *self.vx_mut(inst)? = self.vx(inst)? ^ self.vy(inst)?,
+                    // vx = vx + vy, set vf on overflow
+                    0x4 => {
+                        let (val, overflow) = self.vx(inst)?.overflowing_add(self.vy(inst)?);
+                        *self.vx_mut(inst)? = val;
+                        *self.vf_mut()? = if overflow { 0x1 } else { 0x0 };
+                    }
+                    // vx = vx - vy, unset vf on overflow
+                    0x5 => {
+                        let (val, underflow) = self.vx(inst)?.overflowing_sub(self.vy(inst)?);
+                        *self.vx_mut(inst)? = val;
+                        *self.vf_mut()? = if underflow { 0x0 } else { 0x1 };
+                    }
+                    // right shift
+                    0x6 => {
+                        if USE_VY_WHEN_SHIFING {
+                            *self.vx_mut(inst)? = self.vy(inst)?;
+                        }
+                        let shifted_bit = self.vx(inst)? & 0x1;
+                        *self.vx_mut(inst)? >>= 1;
+                        *self.vf_mut()? = shifted_bit;
+                    }
+                    // vx = vy - vx, unset vf on overflow
+                    0x7 => {
+                        let (val, underflow) = self.vy(inst)?.overflowing_sub(self.vx(inst)?);
+                        *self.vx_mut(inst)? = val;
+                        *self.vf_mut()? = if underflow { 0x0 } else { 0x1 };
+                    }
+                    // left shift
+                    0xe => {
+                        if USE_VY_WHEN_SHIFING {
+                            *self.vx_mut(inst)? = self.vy(inst)?;
+                        }
+                        let shifted_bit = self.vx(inst)? & LEFTMOST_BIT >> 7;
+                        *self.vx_mut(inst)? <<= 1;
+                        *self.vf_mut()? = shifted_bit;
+                    }
+                    _ => {
+                        Self::unknown(inst);
+                    }
+                }
+            }
+            // conditional skip when vx not equal vy
+            0x9 => {
+                if take_n(inst) == 0 {
+                    if self.vx(inst)? != self.vy(inst)? {
+                        self.skip_inst();
+                    }
+                } else {
+                    Self::unknown(inst);
+                }
             }
             // set index register
             0xa => {
                 self.ireg = take_nnn(inst);
             }
+            // jump with offset
+            0xb => {
+                let offset = if BXNN_JUMP_WITH_OFFSET {
+                    self.vx(inst)?
+                } else {
+                    self.vreg.get(0).copied().ok_or(EE::VRegOutOfBounds)?
+                };
+                let jump_to = take_nnn(inst).overflowing_add(offset as u16).0;
+                self.pc = jump_to;
+            }
+            // random
+            0xc => {
+                *self.vx_mut(inst)? = rand::random::<u8>() & take_nn(inst);
+            }
+            // draw
             0xd => {
-                let x_coord = *self
-                    .vreg
-                    .get(take_x(inst) as usize)
-                    .ok_or(EE::VRegOutOfBounds)?;
-                let y_coord = *self
-                    .vreg
-                    .get(take_y(inst) as usize)
-                    .ok_or(EE::VRegOutOfBounds)?;
                 let height = take_n(inst);
-                self.draw_sprite(x_coord, y_coord, height)?;
+                self.draw_sprite(self.vx(inst)?, self.vy(inst)?, height)?;
             }
             _ => {
-                println!("Unknown instruction: {:#06x}", inst);
+                Self::unknown(inst);
             }
         }
         Ok(())
+    }
+
+    /// skip one instruction
+    fn skip_inst(&mut self) {
+        self.pc += 2;
+    }
+
+    /// report unknown instruction encounter
+    fn unknown(inst: u16) {
+        println!("Unknown instruction: {:#06x}", inst);
     }
 }
 
 /// memory manipulation
 impl Chip8 {
+    /// copy `bytes` to ram given start memory offset
     fn load<B: AsRef<[u8]>>(&mut self, bytes: B, offset: usize) -> Result<(), ExecError> {
         let bytes_ref = bytes.as_ref();
         self.ram
@@ -200,6 +307,49 @@ impl Chip8 {
             Err(EE::StackUnderflow)
         }
     }
+
+    /// shortcut for taking vx value
+    fn vx(&self, inst: u16) -> Result<u8, ExecError> {
+        self.vreg
+            .get(take_x(inst) as usize)
+            .copied()
+            .ok_or(EE::VRegOutOfBounds)
+    }
+
+    /// shortcut for taking vy value
+    fn vy(&self, inst: u16) -> Result<u8, ExecError> {
+        self.vreg
+            .get(take_y(inst) as usize)
+            .copied()
+            .ok_or(EE::VRegOutOfBounds)
+    }
+
+    // shortcut for taking vf value
+    fn vf(&self) -> Result<u8, ExecError> {
+        self.vreg
+            .get(VF_REG_FLAG)
+            .copied()
+            .ok_or(EE::VRegOutOfBounds)
+    }
+
+    /// shortcut for taking vx mutable reference
+    fn vx_mut(&mut self, inst: u16) -> Result<&mut u8, ExecError> {
+        self.vreg
+            .get_mut(take_x(inst) as usize)
+            .ok_or(EE::VRegOutOfBounds)
+    }
+
+    /// shortcut for taking vy mutable reference
+    fn vy_mut(&mut self, inst: u16) -> Result<&mut u8, ExecError> {
+        self.vreg
+            .get_mut(take_y(inst) as usize)
+            .ok_or(EE::VRegOutOfBounds)
+    }
+
+    /// shortcut for taking vf mutable reference
+    fn vf_mut(&mut self) -> Result<&mut u8, ExecError> {
+        self.vreg.get_mut(VF_REG_FLAG).ok_or(EE::VRegOutOfBounds)
+    }
 }
 
 // value for pixel being on, i.e. white
@@ -210,7 +360,7 @@ const PIXEL_PRE_OFF: u8 = 0xfe;
 const PIXEL_OFF: u8 = 0x00;
 // VF register address which is treated as flag
 const VF_REG_FLAG: usize = 0x0f;
-const LEFTMOST_BIT: u8 = 0b10000000;
+const LEFTMOST_BIT: u8 = 0b1000_0000;
 
 // translate XY location to 1-dim array index
 #[inline]
@@ -242,13 +392,8 @@ impl Chip8 {
             .unwrap_or_else(|| &PIXEL_OFF)
     }
 
-    fn set_vf(&mut self, val: u8) -> Result<(), ExecError> {
-        *self.vreg.get_mut(VF_REG_FLAG).ok_or(EE::VRegOutOfBounds)? = val;
-        Ok(())
-    }
-
     fn draw_sprite(&mut self, x: u8, y: u8, h: u8) -> Result<(), ExecError> {
-        self.set_vf(0x00)?;
+        *self.vf_mut()? = 0x00;
         // position sprite inside display
         let x = x as usize % DISPLAY_W;
         let y = y as usize % DISPLAY_H;
@@ -257,9 +402,9 @@ impl Chip8 {
             let addr = self.ireg + line_i as u16;
             let line = *self.ram.get(addr as usize).ok_or(EE::MemoryError)?;
             for bit_i in 0..8usize {
-                if (LEFTMOST_BIT >> bit_i) & line > 0 {
+                if (LEFTMOST_BIT >> bit_i) & line != 0 {
                     if self.flip_pixel(x + bit_i, y + line_i) {
-                        self.set_vf(0x01)?;
+                        *self.vf_mut()? = 0x01;
                     }
                 }
             }
