@@ -1,10 +1,24 @@
-use crate::device::{loc_to_idx, DISPLAY_H, DISPLAY_SIZE, DISPLAY_W};
+use crate::{
+    device::{loc_to_idx, DISPLAY_H, DISPLAY_SIZE, DISPLAY_W},
+    util::Chip8Key,
+};
 use macroquad::prelude::*;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+};
 
 const BORDER_OFFSET_PERCENT: u8 = 5;
 
-pub async fn display_draw(display: Arc<Mutex<[u8; DISPLAY_SIZE]>>) {
+pub async fn display_draw(
+    display: Arc<Mutex<[u8; DISPLAY_SIZE]>>,
+    down_keys: HashMap<Chip8Key, Arc<AtomicBool>>,
+    released_keys: HashMap<Chip8Key, Arc<AtomicBool>>,
+    keymap: HashMap<Chip8Key, KeyCode>,
+) {
     let tiles_w = DISPLAY_W as f32;
     let tiles_h = DISPLAY_H as f32;
     let offset = BORDER_OFFSET_PERCENT as f32 / 100.0;
@@ -35,6 +49,17 @@ pub async fn display_draw(display: Arc<Mutex<[u8; DISPLAY_SIZE]>>) {
                 }
             }
         }
+
+        for (ref k, ref state) in down_keys.iter() {
+            let code = keymap[k];
+            state.store(is_key_down(code), Ordering::SeqCst);
+        }
+
+        for (ref k, ref state) in released_keys.iter() {
+            let code = keymap[k];
+            state.store(is_key_released(code), Ordering::SeqCst);
+        }
+
         // println!("FPS: {:.1}", get_fps());
         next_frame().await
     }

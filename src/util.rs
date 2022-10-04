@@ -1,4 +1,6 @@
 //! Utilities
+use macroquad::prelude::KeyCode;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Display;
 
@@ -48,6 +50,7 @@ pub enum ExecError {
     DisplayOutOfBounds,
     LoadRomError,
     RamError,
+    KeymapError,
 }
 
 impl Error for ExecError {}
@@ -76,6 +79,9 @@ impl Display for ExecError {
             Self::RamError => {
                 write!(f, "Error while writing data to RAM")
             }
+            Self::KeymapError => {
+                write!(f, "Error while mapping key from instruction to keycode")
+            }
         }
     }
 }
@@ -100,3 +106,60 @@ pub fn get_default_font() -> Vec<u8> {
         0xF0, 0x80, 0xF0, 0x80, 0x80, // F
     ]
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum Chip8Key {
+    K0 = 0,
+    K1,
+    K2,
+    K3,
+    K4,
+    K5,
+    K6,
+    K7,
+    K8,
+    K9,
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+}
+
+impl From<u8> for Chip8Key {
+    fn from(byte: u8) -> Self {
+        // safe to unwrap, since all variants are covered
+        byte.try_into().unwrap()
+    }
+}
+
+#[rustfmt::skip]
+pub fn get_default_keymap() -> HashMap<Chip8Key, KeyCode> {
+    use KeyCode as MQ;
+    use Chip8Key as C8;
+    vec![
+        (C8::K1, MQ::Key1), (C8::K2, MQ::Key2), (C8::K3, MQ::Key3), (C8::C, MQ::Key4),
+        (C8::K4,    MQ::Q), (C8::K5,    MQ::W), (C8::K6,    MQ::E), (C8::D,    MQ::R),
+        (C8::K7,    MQ::A), (C8::K8,    MQ::S), (C8::K9,    MQ::D), (C8::E,    MQ::F),
+        (C8::A,     MQ::Z), (C8::K0,    MQ::X), (C8::B,     MQ::C), (C8::F,    MQ::V),
+    ]
+    .into_iter()
+    .collect()
+}
+
+// FIXME: remove if not needed
+// #[rustfmt::skip]
+// pub fn get_default_keymap() -> HashMap<KeyCode, Chip8Key> {
+//     use KeyCode as MQ;
+//     use Chip8Key as C8;
+//     vec![
+//         (MQ::Key1, C8::K1), (MQ::Key2, C8::K2), (MQ::Key3, C8::K3), (MQ::Key4, C8::C),
+//         (MQ::Q,    C8::K4), (MQ::W,    C8::K5), (MQ::E,    C8::K6), (MQ::R,    C8::D),
+//         (MQ::A,    C8::K7), (MQ::S,    C8::K8), (MQ::D,    C8::K9), (MQ::F,    C8::E),
+//         (MQ::Z,    C8::A ), (MQ::X,    C8::K0), (MQ::C,    C8::B ), (MQ::V,    C8::F),
+//     ]
+//     .into_iter()
+//     .collect()
+// }

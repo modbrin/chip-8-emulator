@@ -1,14 +1,15 @@
 use crate::util::*;
+use macroquad::prelude::KeyCode;
 use std::{
+    collections::HashMap,
     fs::File,
     io::{BufReader, Read, Write},
-    ops::Deref,
     path::Path,
     sync::{
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         Arc, Mutex,
     },
-    thread,
+    thread::{self},
     time::{Duration, Instant},
 };
 
@@ -37,7 +38,7 @@ pub const FPS: usize = 60;
 /// timers frequency, 60 Hz
 pub const TIMERS_FREQ: usize = 60;
 
-pub const USE_VY_WHEN_SHIFING: bool = false; // TODO: should be a runtime setting
+pub const USE_VY_WHEN_SHIFTING: bool = false; // TODO: should be a runtime setting
 pub const BXNN_JUMP_WITH_OFFSET: bool = false; // TODO: should be a runtime setting
 
 pub struct Chip8 {
@@ -59,6 +60,12 @@ pub struct Chip8 {
     pub delay_timer: Arc<AtomicU8>,
     /// sound timer - beep while non-zero, decrements at 60 Hz rate
     pub sound_timer: Arc<AtomicU8>,
+    /// keys that are currently pressed
+    pub down_keys: HashMap<Chip8Key, Arc<AtomicBool>>,
+    /// keys that were release during current frame
+    pub released_keys: HashMap<Chip8Key, Arc<AtomicBool>>,
+    /// keymap for mapping from internal keys to macroquad
+    pub keymap: HashMap<Chip8Key, KeyCode>,
 }
 
 type EE = ExecError;
@@ -66,6 +73,7 @@ type EE = ExecError;
 /// control flow
 impl Chip8 {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, ExecError> {
+        let default_keymap = get_default_keymap(); // TODO: move out keymap outside device
         let mut device = Self {
             display: Arc::new(Mutex::new([0; DISPLAY_SIZE])),
             pc: ROM_LOAD_ADDR as u16,
@@ -76,6 +84,15 @@ impl Chip8 {
             ram: [0; RAM_SIZE],
             delay_timer: Arc::new(AtomicU8::new(0)),
             sound_timer: Arc::new(AtomicU8::new(0)),
+            down_keys: default_keymap
+                .keys()
+                .map(|&k| (k, Arc::new(AtomicBool::from(false))))
+                .collect(),
+            released_keys: default_keymap
+                .keys()
+                .map(|&k| (k, Arc::new(AtomicBool::from(false))))
+                .collect(),
+            keymap: default_keymap,
         };
         let rom = Self::read_rom_from_file(path)?;
         device.load(rom, ROM_LOAD_ADDR)?;
@@ -130,6 +147,7 @@ impl Chip8 {
             0x0 => match take_nnn(inst) {
                 // clear screen
                 0x0E0 => self.clear_display(),
+                // return from subroutine
                 0x0EE => self.pc = self.stack_pop()?,
                 _ => (),
             },
@@ -198,7 +216,7 @@ impl Chip8 {
                     }
                     // right shift
                     0x6 => {
-                        if USE_VY_WHEN_SHIFING {
+                        if USE_VY_WHEN_SHIFTING {
                             *self.vx_mut(inst)? = self.vy(inst)?;
                         }
                         let shifted_bit = self.vx(inst)? & 0x1;
@@ -213,7 +231,7 @@ impl Chip8 {
                     }
                     // left shift
                     0xe => {
-                        if USE_VY_WHEN_SHIFING {
+                        if USE_VY_WHEN_SHIFTING {
                             *self.vx_mut(inst)? = self.vy(inst)?;
                         }
                         let shifted_bit = self.vx(inst)? & LEFTMOST_BIT >> 7;
@@ -258,6 +276,47 @@ impl Chip8 {
                 let height = take_n(inst);
                 self.draw_sprite(self.vx(inst)?, self.vy(inst)?, height)?;
             }
+            // skip if key down
+            0xe => match take_nn(inst) {
+                0x9e => {
+                    if self.is_key_pressed(self.vx(inst)?.into())? {
+                        self.reverse_inst()
+                    }
+                }
+                0xa1 => {
+                    if !self.is_key_pressed(self.vx(inst)?.into())? {
+                        self.reverse_inst()
+                    }
+                }
+                _ => Self::unknown(inst),
+            },
+            // manipulate timers
+            0xf => {
+                match take_nn(inst) {
+                    // set vx to delay timer
+                    0x07 => {
+                        *self.vx_mut(inst)? = self.delay_timer.load(Ordering::SeqCst);
+                    }
+                    // set delay timer to vx
+                    0x15 => {
+                        self.delay_timer.store(self.vx(inst)?, Ordering::SeqCst);
+                    }
+                    // set sound timer to vx
+                    0x18 => {
+                        self.sound_timer.store(self.vx(inst)?, Ordering::SeqCst);
+                    }
+                    // add to index register
+                    0x1e => {
+                        let (val, _overflow) = self.ireg.overflowing_add(self.vx(inst)? as u16);
+                        self.ireg = val;
+                        // set vf if index register is outside normal addressing range
+                        if val > 0x0fff {
+                            *self.vf_mut()? = 0x1;
+                        }
+                    }
+                    _ => Self::unknown(inst),
+                }
+            }
             _ => {
                 Self::unknown(inst);
             }
@@ -268,6 +327,25 @@ impl Chip8 {
     /// skip one instruction
     fn skip_inst(&mut self) {
         self.pc += 2;
+    }
+
+    /// reverse one instruction, opposite of `skip_inst`
+    fn reverse_inst(&mut self) {
+        self.pc -= 2;
+    }
+
+    fn is_key_pressed(&self, k: Chip8Key) -> Result<bool, ExecError> {
+        self.down_keys
+            .get(&k)
+            .map(|ab| ab.load(Ordering::SeqCst))
+            .ok_or(EE::KeymapError)
+    }
+
+    fn was_key_released(&self, k: Chip8Key) -> Result<bool, ExecError> {
+        self.released_keys
+            .get(&k)
+            .map(|ab| ab.load(Ordering::SeqCst))
+            .ok_or(EE::KeymapError)
     }
 
     /// report unknown instruction encounter
@@ -459,7 +537,7 @@ pub fn decrement_timers_routine(timers: Vec<Arc<AtomicU8>>) {
         if let Some(sleep_time) = time_per_cycle.checked_sub(inst_time) {
             thread::sleep(sleep_time);
         } else {
-            println!("Timer doesn't meet timing");
+            println!("Decrementing timers took longer than expected");
         }
     }
 }
