@@ -11,6 +11,8 @@ pub const N_MASK: u16 = 0x000f;
 pub const NN_MASK: u16 = 0x00ff;
 pub const NNN_MASK: u16 = 0x0fff;
 
+pub const FONT_CHAR_SIZE: usize = 5;
+
 #[inline]
 pub const fn take_op(inst: u16) -> u8 {
     ((inst & OP_MASK) >> 12) as u8

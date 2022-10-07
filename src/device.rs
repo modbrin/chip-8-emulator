@@ -32,14 +32,12 @@ pub const RAM_SIZE: usize = 4096;
 /// timing, instructions per second
 pub const IPS: usize = 700;
 
-/// render timing, frames per second
-pub const FPS: usize = 60;
-
 /// timers frequency, 60 Hz
 pub const TIMERS_FREQ: usize = 60;
 
 pub const USE_VY_WHEN_SHIFTING: bool = false; // TODO: should be a runtime setting
 pub const BXNN_JUMP_WITH_OFFSET: bool = false; // TODO: should be a runtime setting
+pub const INCREMENT_IREG_ON_REG_TO_MEM: bool = false; // TODO: should be a runtime setting
 
 pub struct Chip8 {
     /// 64x32 display, 8-bit depth
@@ -234,7 +232,7 @@ impl Chip8 {
                         if USE_VY_WHEN_SHIFTING {
                             *self.vx_mut(inst)? = self.vy(inst)?;
                         }
-                        let shifted_bit = self.vx(inst)? & LEFTMOST_BIT >> 7;
+                        let shifted_bit = (self.vx(inst)? & LEFTMOST_BIT) >> 7;
                         *self.vx_mut(inst)? <<= 1;
                         *self.vf_mut()? = shifted_bit;
                     }
@@ -312,6 +310,65 @@ impl Chip8 {
                         // set vf if index register is outside normal addressing range
                         if val > 0x0fff {
                             *self.vf_mut()? = 0x1;
+                        }
+                    }
+                    // blocking wait for keypress
+                    0x0a => {
+                        let released = self
+                            .released_keys
+                            .iter()
+                            .filter_map(|(k, v)| v.load(Ordering::SeqCst).then(|| *k))
+                            .next();
+
+                        if let Some(rel) = released {
+                            self.released_keys
+                                .get(&rel)
+                                .map(|b| b.store(false, Ordering::SeqCst));
+                            *self.vx_mut(inst)? = rel as u8;
+                        } else {
+                            self.reverse_inst();
+                        }
+                    }
+                    // set index register to character
+                    0x29 => {
+                        let char = self.vx(inst)? & 0x0f;
+                        let char_addr = char as usize * FONT_CHAR_SIZE + FONT_LOAD_ADDR;
+                        self.ireg = char_addr as u16;
+                    }
+                    // binary-coded decimal conversion
+                    0x33 => {
+                        let mut vx = self.vx(inst)?;
+                        for dec in (0..3).rev() {
+                            *self
+                                .ram
+                                .get_mut((self.ireg + dec) as usize)
+                                .ok_or(EE::RamError)? = vx % 10;
+                            vx /= 10;
+                        }
+                    }
+                    // store registers in ram
+                    0x55 => {
+                        let x = take_x(inst);
+                        for x_i in 0..=x as usize {
+                            *self
+                                .ram
+                                .get_mut(self.ireg as usize + x_i)
+                                .ok_or(EE::RamError)? =
+                                *self.vreg.get(x_i).ok_or(EE::VRegOutOfBounds)?;
+                        }
+                        if INCREMENT_IREG_ON_REG_TO_MEM {
+                            self.ireg = self.ireg + x as u16 + 1;
+                        }
+                    }
+                    // load registers from ram
+                    0x65 => {
+                        let x = take_x(inst);
+                        for x_i in 0..=x as usize {
+                            *self.vreg.get_mut(x_i).ok_or(EE::VRegOutOfBounds)? =
+                                *self.ram.get(self.ireg as usize + x_i).ok_or(EE::RamError)?;
+                        }
+                        if INCREMENT_IREG_ON_REG_TO_MEM {
+                            self.ireg = self.ireg + x as u16 + 1;
                         }
                     }
                     _ => Self::unknown(inst),
