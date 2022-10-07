@@ -132,8 +132,26 @@ pub enum Chip8Key {
 
 impl From<u8> for Chip8Key {
     fn from(byte: u8) -> Self {
-        // safe to unwrap, since all variants are covered
-        byte.try_into().unwrap()
+        use Chip8Key::*;
+        match byte {
+            0x00 => K0,
+            0x01 => K1,
+            0x02 => K2,
+            0x03 => K3,
+            0x04 => K4,
+            0x05 => K5,
+            0x06 => K6,
+            0x07 => K7,
+            0x08 => K8,
+            0x09 => K9,
+            0x0a => A,
+            0x0b => B,
+            0x0c => C,
+            0x0d => D,
+            0x0e => E,
+            0x0f => F,
+            _ => unreachable!("unsupported key conversion"),
+        }
     }
 }
 
