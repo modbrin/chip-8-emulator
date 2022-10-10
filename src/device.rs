@@ -278,12 +278,12 @@ impl Chip8 {
             0xe => match take_nn(inst) {
                 0x9e => {
                     if self.is_key_pressed(self.vx(inst)?.into())? {
-                        self.reverse_inst()
+                        self.skip_inst()
                     }
                 }
                 0xa1 => {
                     if !self.is_key_pressed(self.vx(inst)?.into())? {
-                        self.reverse_inst()
+                        self.skip_inst()
                     }
                 }
                 _ => Self::unknown(inst),
@@ -488,11 +488,11 @@ impl Chip8 {
 }
 
 // value for pixel being on, i.e. white
-const PIXEL_ON: u8 = 0xff;
+pub const PIXEL_ON: u8 = 0xff;
 // value for pixel being just turned off, will be dimmed with time
-const PIXEL_PRE_OFF: u8 = 0xfe;
+pub const PIXEL_PRE_OFF: u8 = 0xfe;
 // value for pixel being completely off, i.e. black
-const PIXEL_OFF: u8 = 0x00;
+pub const PIXEL_OFF: u8 = 0x00;
 // VF register address which is treated as flag
 const VF_REG_FLAG: usize = 0x0f;
 const LEFTMOST_BIT: u8 = 0b1000_0000;
@@ -511,11 +511,11 @@ pub const fn is_pixel_on(pixel: u8) -> bool {
 /// display management
 impl Chip8 {
     fn clear_display(&mut self) {
-        self.display
-            .lock()
-            .unwrap()
-            .iter_mut()
-            .for_each(|pixel| *pixel = PIXEL_OFF);
+        self.display.lock().unwrap().iter_mut().for_each(|pixel| {
+            if *pixel > PIXEL_PRE_OFF {
+                *pixel = PIXEL_PRE_OFF
+            }
+        });
     }
 
     fn get_pixel_value(&mut self, x: usize, y: usize) -> u8 {
@@ -557,7 +557,7 @@ impl Chip8 {
             .map(|p| {
                 let was_on = *p == PIXEL_ON;
                 if was_on {
-                    *p = PIXEL_OFF;
+                    *p = PIXEL_PRE_OFF;
                 } else {
                     *p = PIXEL_ON;
                 }

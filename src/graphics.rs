@@ -1,5 +1,5 @@
 use crate::{
-    device::{loc_to_idx, DISPLAY_H, DISPLAY_SIZE, DISPLAY_W},
+    device::{loc_to_idx, DISPLAY_H, DISPLAY_SIZE, DISPLAY_W, PIXEL_OFF, PIXEL_ON},
     util::Chip8Key,
 };
 use macroquad::prelude::*;
@@ -11,7 +11,10 @@ use std::{
     },
 };
 
+// amount of space between display pixels in %
 const BORDER_OFFSET_PERCENT: u8 = 5;
+// speed of pixel dimming effect per frame, full white is 255
+const FADE_AMOUNT: u8 = 30;
 
 pub async fn display_draw(
     display: Arc<Mutex<[u8; DISPLAY_SIZE]>>,
@@ -33,7 +36,12 @@ pub async fn display_draw(
         let sw_off = tw * offset;
         let sh_off = th * offset;
 
-        let display_handle = display.lock().unwrap();
+        let mut display_handle = display.lock().unwrap();
+        display_handle.iter_mut().for_each(|pixel| {
+            if *pixel < PIXEL_ON && *pixel > PIXEL_OFF {
+                *pixel = pixel.saturating_sub(FADE_AMOUNT);
+            }
+        });
         let display_state = display_handle.clone();
         drop(display_handle); // minimize time holding display lock
         for x_i in 0..DISPLAY_W {
