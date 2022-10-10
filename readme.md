@@ -3,12 +3,12 @@
 ### The "Hello, emulation world!" project
 
 ## Features
-- [x] Chip-8 Instruction Set Support
+- [x] Chip-8 instruction set support
 - [x] Graphics via macroquad
 - [x] Input support
 - [x] Pixels fade-off effect to avoid flicker 
 - [ ] Beeping sound
-- [ ] Super Chip Support
+- [ ] Super-Chip support
 
 ## How to use
 ```
